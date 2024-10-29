@@ -11,6 +11,8 @@ use teloxide::{
 };
 use tokio::{join, sync::broadcast::Sender};
 
+const MAX_SLEEP_TIME: u64 = 68719476733;
+
 #[derive(BotCommands, Clone)]
 #[command(
     rename_rule = "lowercase",
@@ -119,15 +121,21 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         if next_message.when_send < Utc::now().naive_utc() {
                             send_message(&bot_clone, &pool_clone, next_message).await;
                         } else {
+                            let sleep_time = std::cmp::min(
+                                Duration::from_millis(MAX_SLEEP_TIME),
+                                (next_message.when_send - Utc::now().naive_utc())
+                                    .to_std()
+                                    .unwrap()
+                            );
                             tokio::select! {
                                 _ = tokio::signal::ctrl_c() => { break; }
-                                _ = tokio::time::sleep(std::cmp::min(Duration::from_millis(68719476733), (next_message.when_send - Utc::now().naive_utc()).to_std().unwrap())) => {}
+                                _ = tokio::time::sleep(sleep_time) => {}
                                 _ = receiver.recv() => {}
                             }
                         },
                     Err(_) => tokio::select! {
                         _ = tokio::signal::ctrl_c() => { break; }
-                        _ = tokio::time::sleep(Duration::from_millis(68719476733)) => {}
+                        _ = tokio::time::sleep(Duration::from_millis(MAX_SLEEP_TIME)) => {}
                         _ = receiver.recv() => {}
                     }
                 }
