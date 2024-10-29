@@ -27,10 +27,19 @@
         };
 
         me-recorda-bot = pkgs.callPackage ./me-recorda-bot.nix { inherit naersk; };
+        shell = pkgs.mkShell {
+          inputsFrom = [ me-recorda-bot ];
+
+          buildInputs = [
+            pkgs.sqlx-cli
+          ];
+        };
       in
       {
         packages.me-recorda-bot = me-recorda-bot;
         packages.default = me-recorda-bot;
+
+        devShells.default = shell;
       }
     );
 }
