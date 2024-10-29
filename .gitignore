@@ -2,3 +2,5 @@
 .direnv/
 result
 *.sqlite
+*.sqlite-shm
+*.sqlite-wal
