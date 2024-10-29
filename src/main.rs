@@ -1,3 +1,4 @@
+use core::fmt;
 use std::{error::Error, sync::Arc, time::Duration};
 
 use chrono::{NaiveDateTime, Utc};
@@ -25,12 +26,18 @@ enum Command {
     RemindMe(String),
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 struct ReplyToMessage {
     message_id: i64,
     reply_to_id: i64,
     chat_id: i64,
     when_send: NaiveDateTime,
+}
+
+impl fmt::Display for ReplyToMessage {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{:?}", self)
+    }
 }
 
 async fn answer(
@@ -47,6 +54,7 @@ async fn answer(
         }
         Command::RemindMe(s) => match parse_date_string(&s, Utc::now(), Dialect::Uk) {
             Ok(date) => {
+                log::info!("Message received and parsed to date {date}");
                 bot.send_message(msg.chat.id, format!("I'll remind you at {}", date))
                     .reply_parameters(ReplyParameters::new(msg.id))
                     .await?;
@@ -77,6 +85,7 @@ async fn answer(
 }
 
 async fn send_message(bot: &Bot, pool: &Pool<Sqlite>, message: ReplyToMessage) {
+    log::info!("Sending message {message}");
     bot.send_message(ChatId(message.chat_id), "Reminding you")
         .reply_parameters(ReplyParameters::new(MessageId(
             i32::try_from(message.reply_to_id).unwrap(),
@@ -128,13 +137,19 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                     .unwrap()
                             );
                             tokio::select! {
-                                _ = tokio::signal::ctrl_c() => { break; }
+                                _ = tokio::signal::ctrl_c() => {
+                                    log::info!("Stopping worker");
+                                    break;
+                                }
                                 _ = tokio::time::sleep(sleep_time) => {}
                                 _ = receiver.recv() => {}
                             }
                         },
                     Err(_) => tokio::select! {
-                        _ = tokio::signal::ctrl_c() => { break; }
+                        _ = tokio::signal::ctrl_c() => {
+                            log::info!("Stopping worker");
+                            break;
+                        }
                         _ = tokio::time::sleep(Duration::from_millis(MAX_SLEEP_TIME)) => {}
                         _ = receiver.recv() => {}
                     }
