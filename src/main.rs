@@ -1,13 +1,15 @@
 use std::{error::Error, sync::Arc, time::Duration};
 
-use chrono::Utc;
+use chrono::{NaiveDateTime, Utc};
 use chrono_english::{parse_date_string, Dialect};
 use sqlx::{sqlite::SqlitePoolOptions, Pool, Sqlite};
 use teloxide::{
-    macros::BotCommands, prelude::*, types::ReplyParameters,
+    macros::BotCommands,
+    prelude::*,
+    types::{MessageId, ReplyParameters},
     utils::command::BotCommands as BCommands,
 };
-use tokio::join;
+use tokio::{join, sync::broadcast::Sender};
 
 #[derive(BotCommands, Clone)]
 #[command(
@@ -21,7 +23,21 @@ enum Command {
     RemindMe(String),
 }
 
-async fn answer(bot: Arc<Bot>, msg: Message, cmd: Command, db: Pool<Sqlite>) -> ResponseResult<()> {
+#[derive(Clone, Copy)]
+struct ReplyToMessage {
+    message_id: i64,
+    reply_to_id: i64,
+    chat_id: i64,
+    when_send: NaiveDateTime,
+}
+
+async fn answer(
+    bot: Arc<Bot>,
+    msg: Message,
+    cmd: Command,
+    db: Pool<Sqlite>,
+    sender: Sender<()>,
+) -> ResponseResult<()> {
     match cmd {
         Command::Help => {
             bot.send_message(msg.chat.id, Command::descriptions().to_string())
@@ -46,6 +62,7 @@ async fn answer(bot: Arc<Bot>, msg: Message, cmd: Command, db: Pool<Sqlite>) -> 
                         .await?;
                     return Ok(());
                 };
+                sender.send(()).unwrap();
             }
             Err(_) => {
                 bot.send_message(msg.chat.id, "Non recognized date format")
@@ -57,31 +74,68 @@ async fn answer(bot: Arc<Bot>, msg: Message, cmd: Command, db: Pool<Sqlite>) -> 
     Ok(())
 }
 
+async fn send_message(bot: &Bot, pool: &Pool<Sqlite>, message: ReplyToMessage) {
+    bot.send_message(ChatId(message.chat_id), "Reminding you")
+        .reply_parameters(ReplyParameters::new(MessageId(
+            i32::try_from(message.reply_to_id).unwrap(),
+        )))
+        .await
+        .unwrap();
+    sqlx::query!(
+        "DELETE FROM messages WHERE message_id = $1",
+        message.message_id
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     pretty_env_logger::init();
     log::info!("Iniciando me recorda bot");
 
     let bot = Arc::new(Bot::from_env());
+    let bot_clone = bot.clone();
 
     let pool = SqlitePoolOptions::new()
         .max_connections(5)
         .connect("sqlite:./database.sqlite")
         .await?;
 
+    let pool_clone = pool.clone();
+
+    let (sender, mut receiver) = tokio::sync::broadcast::channel(2);
+
     let f1 = tokio::spawn(async move {
         loop {
-            tokio::select! {
-                _ = tokio::signal::ctrl_c() => { break; }
-                _ = tokio::time::sleep(Duration::from_secs(1)) => {}
-            };
-
-            log::warn!("One second");
+            match sqlx::query_as!(
+                ReplyToMessage,
+                "SELECT message_id, reply_to_id, chat_id, when_send FROM messages ORDER BY when_send LIMIT 1"
+            )
+                .fetch_one(&pool_clone)
+                .await {
+                    Ok(next_message) =>
+                        if next_message.when_send < Utc::now().naive_utc() {
+                            send_message(&bot_clone, &pool_clone, next_message).await;
+                        } else {
+                            tokio::select! {
+                                _ = tokio::signal::ctrl_c() => { break; }
+                                _ = tokio::time::sleep(std::cmp::min(Duration::from_millis(68719476733), (next_message.when_send - Utc::now().naive_utc()).to_std().unwrap())) => {}
+                                _ = receiver.recv() => {}
+                            }
+                        },
+                    Err(_) => tokio::select! {
+                        _ = tokio::signal::ctrl_c() => { break; }
+                        _ = tokio::time::sleep(Duration::from_millis(68719476733)) => {}
+                        _ = receiver.recv() => {}
+                    }
+                }
         }
     });
 
     let f2 = Command::repl(bot.clone(), move |bot, msg, cmd| {
-        answer(bot, msg, cmd, pool.clone())
+        answer(bot, msg, cmd, pool.clone(), sender.clone())
     });
 
     let _ = join!(f1, f2);
