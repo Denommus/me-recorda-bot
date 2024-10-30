@@ -1,8 +1,9 @@
 use core::fmt;
-use std::{error::Error, sync::Arc, time::Duration};
-
-use chrono::{NaiveDateTime, Utc};
+use std::{error::Error, time::Duration};
+use std::sync::Arc;
+use chrono::{NaiveDateTime, TimeDelta, Utc};
 use chrono_english::{parse_date_string, Dialect};
+use futures_util::StreamExt;
 use sqlx::{sqlite::SqlitePoolOptions, Pool, Sqlite};
 use teloxide::{
     macros::BotCommands,
@@ -12,7 +13,7 @@ use teloxide::{
 };
 use tokio::sync::broadcast::Sender;
 
-const MAX_SLEEP_TIME: u64 = 68719476733;
+const MAX_SLEEP_TIME: Duration = Duration::from_millis(68719476733);
 
 #[derive(BotCommands, Clone)]
 #[command(
@@ -45,7 +46,7 @@ async fn answer(
     msg: Message,
     cmd: Command,
     db: Pool<Sqlite>,
-    sender: Sender<()>,
+    message_added: Sender<()>,
 ) -> ResponseResult<()> {
     match cmd {
         Command::Help => {
@@ -72,7 +73,7 @@ async fn answer(
                         .await?;
                     return Ok(());
                 };
-                sender.send(()).unwrap();
+                message_added.send(()).unwrap();
             }
             Err(_) => {
                 bot.send_message(msg.chat.id, "Non recognized date format")
@@ -106,61 +107,64 @@ async fn main() -> Result<(), Box<dyn Error>> {
     pretty_env_logger::init();
     log::info!("Iniciando me recorda bot");
 
-    let bot = Arc::new(Bot::from_env());
-    let bot_clone = bot.clone();
+    let bot = Bot::from_env();
 
-    let pool = SqlitePoolOptions::new()
+    let db = SqlitePoolOptions::new()
         .max_connections(5)
         .connect("sqlite:./database.sqlite")
         .await?;
 
-    let pool_clone = pool.clone();
+    let (message_added, mut wake_up_consumer) = tokio::sync::broadcast::channel(2);
 
-    let (sender, mut receiver) = tokio::sync::broadcast::channel(2);
-
-    let _ = tokio::spawn(async move {
-        loop {
-            match sqlx::query_as!(
+    let consume_messages = tokio::spawn({
+        let bot = bot.clone();
+        let db = db.clone();
+        async move {
+            loop {
+                let mut messages = sqlx::query_as!(
                 ReplyToMessage,
-                "SELECT message_id, reply_to_id, chat_id, when_send FROM messages ORDER BY when_send LIMIT 1"
-            )
-                .fetch_one(&pool_clone)
-                .await {
-                    Ok(next_message) =>
-                        if next_message.when_send < Utc::now().naive_utc() {
-                            send_message(&bot_clone, &pool_clone, next_message).await;
-                        } else {
-                            let sleep_time = std::cmp::min(
-                                Duration::from_millis(MAX_SLEEP_TIME),
-                                (next_message.when_send - Utc::now().naive_utc())
-                                    .to_std()
-                                    .unwrap()
-                            );
-                            tokio::select! {
-                                _ = tokio::signal::ctrl_c() => {
-                                    log::info!("Stopping worker");
-                                    break;
-                                }
-                                _ = tokio::time::sleep(sleep_time) => {}
-                                _ = receiver.recv() => {}
-                            }
-                        },
-                    Err(_) => tokio::select! {
-                        _ = tokio::signal::ctrl_c() => {
-                            log::info!("Stopping worker");
-                            break;
+                "SELECT message_id, reply_to_id, chat_id, when_send FROM messages ORDER BY when_send"
+            ).fetch(&db);
+
+                let now = Utc::now();
+                let mut sleep_for: Duration = MAX_SLEEP_TIME;
+
+                while let Some(message) = messages.next().await {
+                    let message = match message {
+                        Ok(message) => message,
+                        Err(error) => {
+                            log::error!("Failed to fetch message, skipping: {error:?}");
+                            continue;
                         }
-                        _ = tokio::time::sleep(Duration::from_millis(MAX_SLEEP_TIME)) => {}
-                        _ = receiver.recv() => {}
+                    };
+
+                    let should_send_in = message.when_send.and_utc() - now;
+                    if should_send_in > TimeDelta::zero() {
+                        sleep_for = should_send_in.to_std()
+                            .expect("Can only sleep for a positive amount of time");
+                        break;
                     }
+
+                    send_message(&bot, &db, message).await;
                 }
+
+                tokio::select! {
+                    _ = tokio::signal::ctrl_c() => break,
+                    _ = tokio::time::sleep(sleep_for) => {},
+                    _ = wake_up_consumer.recv() => {}
+                }
+            }
+
+            log::info!("Stopping worker");
         }
     });
 
     Command::repl(bot.clone(), move |bot, msg, cmd| {
-        answer(bot, msg, cmd, pool.clone(), sender.clone())
+        answer(bot, msg, cmd, db.clone(), message_added.clone())
     })
     .await;
+
+    consume_messages.await?;
 
     Ok(())
 }
