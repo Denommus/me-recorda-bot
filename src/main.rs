@@ -50,6 +50,7 @@ async fn answer(
     match cmd {
         Command::Help => {
             bot.send_message(msg.chat.id, Command::descriptions().to_string())
+                .reply_parameters(ReplyParameters::new(msg.id))
                 .await?;
         }
         Command::RemindMe(s) => match parse_date_string(&s, Utc::now(), Dialect::Uk) {
@@ -69,6 +70,7 @@ async fn answer(
                 .await
                 else {
                     bot.send_message(msg.chat.id, "Error saving to the database")
+                        .reply_parameters(ReplyParameters::new(msg.id))
                         .await?;
                     return Ok(());
                 };
@@ -76,6 +78,7 @@ async fn answer(
             }
             Err(_) => {
                 bot.send_message(msg.chat.id, "Non recognized date format")
+                    .reply_parameters(ReplyParameters::new(msg.id))
                     .await?;
             }
         },
