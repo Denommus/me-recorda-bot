@@ -10,7 +10,7 @@ use teloxide::{
     types::{MessageId, ReplyParameters},
     utils::command::BotCommands as BCommands,
 };
-use tokio::{join, sync::broadcast::Sender};
+use tokio::sync::broadcast::Sender;
 
 const MAX_SLEEP_TIME: u64 = 68719476733;
 
@@ -118,7 +118,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let (sender, mut receiver) = tokio::sync::broadcast::channel(2);
 
-    let f1 = tokio::spawn(async move {
+    let _ = tokio::spawn(async move {
         loop {
             match sqlx::query_as!(
                 ReplyToMessage,
@@ -157,11 +157,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
         }
     });
 
-    let f2 = Command::repl(bot.clone(), move |bot, msg, cmd| {
+    Command::repl(bot.clone(), move |bot, msg, cmd| {
         answer(bot, msg, cmd, pool.clone(), sender.clone())
-    });
-
-    let _ = join!(f1, f2);
+    })
+    .await;
 
     Ok(())
 }
