@@ -121,7 +121,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let (sender, mut receiver) = tokio::sync::broadcast::channel(2);
 
-    let _ = tokio::spawn(async move {
+    tokio::spawn(async move {
         loop {
             match sqlx::query_as!(
                 ReplyToMessage,
