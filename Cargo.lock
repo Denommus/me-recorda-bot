@@ -985,6 +985,7 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "chrono-english",
+ "futures-util",
  "log",
  "pretty_env_logger",
  "sqlx",
