@@ -26,7 +26,7 @@ enum Command {
     RemindMe(String),
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, sqlx::FromRow)]
 struct ReplyToMessage {
     message_id: i64,
     reply_to_id: i64,
@@ -59,13 +59,13 @@ async fn answer(
                 bot.send_message(msg.chat.id, format!("I'll remind you at {}", date))
                     .reply_parameters(ReplyParameters::new(msg.id))
                     .await?;
-                let Ok(_) = sqlx::query!(
+                let Ok(_) = sqlx::query(
                     "INSERT INTO messages (reply_to_id, chat_id, when_send) \
                                               VALUES ($1, $2, $3)",
-                    msg.id.0,
-                    msg.chat.id.0,
-                    date
                 )
+                .bind(msg.id.0)
+                .bind(msg.chat.id.0)
+                .bind(date)
                 .execute(&db)
                 .await
                 else {
@@ -95,13 +95,11 @@ async fn send_message(bot: &Bot, pool: &Pool<Sqlite>, message: ReplyToMessage) {
         )))
         .await
         .unwrap();
-    sqlx::query!(
-        "DELETE FROM messages WHERE message_id = $1",
-        message.message_id
-    )
-    .execute(pool)
-    .await
-    .unwrap();
+    sqlx::query("DELETE FROM messages WHERE message_id = $1")
+        .bind(message.message_id)
+        .execute(pool)
+        .await
+        .unwrap();
 }
 
 #[tokio::main]
@@ -123,8 +121,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     tokio::spawn(async move {
         loop {
-            match sqlx::query_as!(
-                ReplyToMessage,
+            match sqlx::query_as::<_, ReplyToMessage>(
                 "SELECT message_id, reply_to_id, chat_id, when_send FROM messages ORDER BY when_send LIMIT 1"
             )
                 .fetch_one(&pool_clone)
