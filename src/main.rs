@@ -124,9 +124,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
             match sqlx::query_as::<_, ReplyToMessage>(
                 "SELECT message_id, reply_to_id, chat_id, when_send FROM messages ORDER BY when_send LIMIT 1"
             )
-                .fetch_one(&pool_clone)
+                .fetch_optional(&pool_clone)
                 .await {
-                    Ok(next_message) =>
+                    Ok(Some(next_message)) =>
                         if next_message.when_send < Utc::now().naive_utc() {
                             send_message(&bot_clone, &pool_clone, next_message).await;
                         } else {
@@ -145,7 +145,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                 _ = receiver.recv() => {}
                             }
                         },
-                    Err(_) => tokio::select! {
+                    Ok(None) | Err(_) => tokio::select! {
                         _ = tokio::signal::ctrl_c() => {
                             log::info!("Stopping worker");
                             break;
